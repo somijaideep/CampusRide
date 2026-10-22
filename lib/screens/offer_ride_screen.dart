@@ -4,6 +4,9 @@ import 'package:flutter/material.dart';
 import '../data/ride_data.dart';
 import '../data/student_data.dart';
 import '../models/ride_model.dart';
+import '../widgets/location_autocomplete_field.dart';
+
+const Color campusRideTeal = Color(0xFF00897B);
 
 class OfferRideScreen extends StatefulWidget {
   const OfferRideScreen({super.key});
@@ -13,15 +16,22 @@ class OfferRideScreen extends StatefulWidget {
 }
 
 class _OfferRideScreenState extends State<OfferRideScreen> {
-  final TextEditingController startController = TextEditingController();
-  final TextEditingController destinationController = TextEditingController();
-  final TextEditingController seatsController = TextEditingController();
-  final TextEditingController costController = TextEditingController();
+  final TextEditingController startController =
+      TextEditingController();
+
+  final TextEditingController destinationController =
+      TextEditingController();
+
+  final TextEditingController seatsController =
+      TextEditingController();
+
+  final TextEditingController costController =
+      TextEditingController();
 
   DateTime? selectedDate;
   TimeOfDay? selectedTime;
-  String selectedVehicle = 'Car';
 
+  String selectedVehicle = 'Car';
   bool isSaving = false;
 
   Future<void> selectDate() async {
@@ -29,10 +39,12 @@ class _OfferRideScreenState extends State<OfferRideScreen> {
       context: context,
       initialDate: DateTime.now(),
       firstDate: DateTime.now(),
-      lastDate: DateTime.now().add(const Duration(days: 365)),
+      lastDate: DateTime.now().add(
+        const Duration(days: 365),
+      ),
     );
 
-    if (pickedDate != null) {
+    if (pickedDate != null && mounted) {
       setState(() {
         selectedDate = pickedDate;
       });
@@ -45,7 +57,7 @@ class _OfferRideScreenState extends State<OfferRideScreen> {
       initialTime: TimeOfDay.now(),
     );
 
-    if (pickedTime != null) {
+    if (pickedTime != null && mounted) {
       setState(() {
         selectedTime = pickedTime;
       });
@@ -54,7 +66,9 @@ class _OfferRideScreenState extends State<OfferRideScreen> {
 
   Future<void> offerRide() async {
     final String start = startController.text.trim();
-    final String destination = destinationController.text.trim();
+    final String destination =
+        destinationController.text.trim();
+
     final String seatsText = seatsController.text.trim();
     final String costText = costController.text.trim();
 
@@ -93,7 +107,9 @@ class _OfferRideScreenState extends State<OfferRideScreen> {
     if (seats == null || seats <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Please enter a valid number of seats.'),
+          content: Text(
+            'Please enter a valid number of seats.',
+          ),
         ),
       );
       return;
@@ -104,14 +120,16 @@ class _OfferRideScreenState extends State<OfferRideScreen> {
     if (cost == null || cost <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Please enter a valid estimated cost.'),
+          content: Text(
+            'Please enter a valid estimated cost.',
+          ),
         ),
       );
       return;
     }
 
-    // Get the currently authenticated Firebase student.
-    final User? currentUser = FirebaseAuth.instance.currentUser;
+    final User? currentUser =
+        FirebaseAuth.instance.currentUser;
 
     if (currentUser == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -127,17 +145,13 @@ class _OfferRideScreenState extends State<OfferRideScreen> {
     final String formattedDate =
         '${selectedDate!.day}/${selectedDate!.month}/${selectedDate!.year}';
 
-    final String formattedTime = selectedTime!.format(context);
+    final String formattedTime =
+        selectedTime!.format(context);
 
     final Ride newRide = Ride(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
-
-      // Firebase UID identifies the student who created this ride.
       rideCreatorUid: currentUser.uid,
-
-      // Display name of the ride creator.
       rideCreatorName: StudentData.name,
-
       pickup: start,
       destination: destination,
       date: formattedDate,
@@ -153,7 +167,6 @@ class _OfferRideScreenState extends State<OfferRideScreen> {
     });
 
     try {
-      // Save the ride to Firebase Firestore.
       await RideData.addRide(newRide);
 
       if (!mounted) return;
@@ -161,7 +174,7 @@ class _OfferRideScreenState extends State<OfferRideScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Ride offered successfully!'),
-          backgroundColor: Color(0xFF00897B),
+          backgroundColor: campusRideTeal,
         ),
       );
 
@@ -199,6 +212,7 @@ class _OfferRideScreenState extends State<OfferRideScreen> {
     destinationController.dispose();
     seatsController.dispose();
     costController.dispose();
+
     super.dispose();
   }
 
@@ -207,7 +221,7 @@ class _OfferRideScreenState extends State<OfferRideScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Offer a Ride'),
-        backgroundColor: const Color(0xFF00897B),
+        backgroundColor: campusRideTeal,
         foregroundColor: Colors.white,
       ),
       body: SingleChildScrollView(
@@ -216,33 +230,24 @@ class _OfferRideScreenState extends State<OfferRideScreen> {
           children: [
             const SizedBox(height: 10),
 
-            // Starting Point
-            TextField(
+            LocationAutocompleteField(
               controller: startController,
-              decoration: const InputDecoration(
-                labelText: 'Starting Point',
-                hintText: 'Example: VIT-AP',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.location_on),
-              ),
+              labelText: 'Starting Point',
+              hintText: 'Type a pickup location',
+              prefixIcon: Icons.location_on,
             ),
 
             const SizedBox(height: 20),
 
-            // Destination
-            TextField(
+            LocationAutocompleteField(
               controller: destinationController,
-              decoration: const InputDecoration(
-                labelText: 'Destination',
-                hintText: 'Example: Vijayawada',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.flag),
-              ),
+              labelText: 'Destination',
+              hintText: 'Type your destination',
+              prefixIcon: Icons.flag,
             ),
 
             const SizedBox(height: 20),
 
-            // Date
             InkWell(
               onTap: selectDate,
               child: InputDecorator(
@@ -259,7 +264,9 @@ class _OfferRideScreenState extends State<OfferRideScreen> {
                     fontSize: 16,
                     color: selectedDate == null
                         ? Colors.grey
-                        : Colors.black,
+                        : Theme.of(context)
+                            .colorScheme
+                            .onSurface,
                   ),
                 ),
               ),
@@ -267,7 +274,6 @@ class _OfferRideScreenState extends State<OfferRideScreen> {
 
             const SizedBox(height: 20),
 
-            // Time
             InkWell(
               onTap: selectTime,
               child: InputDecorator(
@@ -284,7 +290,9 @@ class _OfferRideScreenState extends State<OfferRideScreen> {
                     fontSize: 16,
                     color: selectedTime == null
                         ? Colors.grey
-                        : Colors.black,
+                        : Theme.of(context)
+                            .colorScheme
+                            .onSurface,
                   ),
                 ),
               ),
@@ -292,7 +300,6 @@ class _OfferRideScreenState extends State<OfferRideScreen> {
 
             const SizedBox(height: 20),
 
-            // Vehicle Type
             DropdownButtonFormField<String>(
               initialValue: selectedVehicle,
               decoration: const InputDecoration(
@@ -325,7 +332,6 @@ class _OfferRideScreenState extends State<OfferRideScreen> {
 
             const SizedBox(height: 20),
 
-            // Available Seats
             TextField(
               controller: seatsController,
               keyboardType: TextInputType.number,
@@ -339,10 +345,10 @@ class _OfferRideScreenState extends State<OfferRideScreen> {
 
             const SizedBox(height: 20),
 
-            // Estimated Cost
             TextField(
               controller: costController,
-              keyboardType: const TextInputType.numberWithOptions(
+              keyboardType:
+                  const TextInputType.numberWithOptions(
                 decimal: true,
               ),
               decoration: const InputDecoration(
@@ -355,14 +361,13 @@ class _OfferRideScreenState extends State<OfferRideScreen> {
 
             const SizedBox(height: 30),
 
-            // Offer Ride Button
             SizedBox(
               width: double.infinity,
               height: 55,
               child: ElevatedButton(
                 onPressed: isSaving ? null : offerRide,
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF00897B),
+                  backgroundColor: campusRideTeal,
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(10),

@@ -3,9 +3,8 @@ import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import '../data/student_data.dart';
-import 'home_screen.dart';
 import 'login_screen.dart';
+import 'home_screen.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -15,116 +14,113 @@ class SplashScreen extends StatefulWidget {
 }
 
 class _SplashScreenState extends State<SplashScreen> {
-  Timer? _timer;
-
   @override
   void initState() {
     super.initState();
-
-    _timer = Timer(
-      const Duration(seconds: 3),
-      _checkLoginStatus,
-    );
+    _startSplash();
   }
 
-  void _checkLoginStatus() {
-    if (!mounted) {
-      return;
-    }
+  Future<void> _startSplash() async {
+    await Future.delayed(const Duration(seconds: 3));
 
-    final User? currentUser = FirebaseAuth.instance.currentUser;
+    if (!mounted) return;
 
-    if (currentUser != null) {
-      // Restore the authenticated student's email.
-      StudentData.email =
-          currentUser.email ?? StudentData.email;
+    await _checkLoginStatus();
+  }
 
-      // Restore the registration number from the VIT-AP email.
-      final String email = currentUser.email ?? '';
+  Future<void> _checkLoginStatus() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
 
-      if (email.contains('@')) {
-        final String username = email.split('@').first;
+      if (user != null) {
+        await user.reload();
 
-        if (username.contains('.')) {
-          StudentData.registrationNumber =
-              username.split('.').last;
+        final refreshedUser = FirebaseAuth.instance.currentUser;
+
+        if (refreshedUser != null && refreshedUser.emailVerified) {
+          if (!mounted) return;
+
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => const HomeScreen(),
+            ),
+          );
+          return;
         }
+
+        await FirebaseAuth.instance.signOut();
       }
-
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (context) => const HomeScreen(),
-        ),
-      );
-    } else {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (context) => const LoginScreen(),
-        ),
-      );
+    } catch (e) {
+      debugPrint('Splash authentication check failed: $e');
     }
-  }
 
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
+    if (!mounted) return;
+
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const LoginScreen(),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF00897B),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(
-              Icons.directions_car_rounded,
-              color: Colors.white,
-              size: 80,
-            ),
-
-            const SizedBox(height: 20),
-
-            const Text(
-              'CampusRide',
-              style: TextStyle(
+      body: Container(
+        width: double.infinity,
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              Color(0xFF00897B),
+              Color(0xFF00695C),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        child: const SafeArea(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.directions_bike,
+                size: 90,
                 color: Colors.white,
-                fontSize: 32,
-                fontWeight: FontWeight.bold,
               ),
-            ),
-
-            const SizedBox(height: 10),
-
-            const Text(
-              'Connecting Students. One Ride at a Time.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
+              SizedBox(height: 20),
+              Text(
+                'CampusRide',
+                style: TextStyle(
+                  fontSize: 32,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+              SizedBox(height: 8),
+              Text(
+                'Connecting Students. One Ride at a Time.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Colors.white,
+                ),
+              ),
+              SizedBox(height: 30),
+              CircularProgressIndicator(
                 color: Colors.white,
-                fontSize: 15,
               ),
-            ),
-
-            const SizedBox(height: 30),
-
-            const CircularProgressIndicator(
-              color: Colors.white,
-            ),
-
-            const SizedBox(height: 15),
-
-            const Text(
-              'Preparing your journey...',
-              style: TextStyle(
-                color: Colors.white70,
-                fontSize: 14,
+              SizedBox(height: 12),
+              Text(
+                'Preparing your journey...',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

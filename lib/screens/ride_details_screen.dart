@@ -1,8 +1,8 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../data/booking_data.dart';
 import '../data/student_data.dart';
-import '../models/booking_model.dart';
 import '../models/ride_model.dart';
 import 'booking_confirmation_screen.dart';
 
@@ -15,7 +15,8 @@ class RideDetailsScreen extends StatefulWidget {
   });
 
   @override
-  State<RideDetailsScreen> createState() => _RideDetailsScreenState();
+  State<RideDetailsScreen> createState() =>
+      _RideDetailsScreenState();
 }
 
 class _RideDetailsScreenState extends State<RideDetailsScreen> {
@@ -35,7 +36,6 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
       final int year = int.parse(dateParts[2]);
 
       final List<String> timeParts = widget.ride.time.split(' ');
-
       final List<String> clockParts = timeParts[0].split(':');
 
       int hour = int.parse(clockParts[0]);
@@ -53,14 +53,8 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
         }
       }
 
-      return DateTime(
-        year,
-        month,
-        day,
-        hour,
-        minute,
-      );
-    } catch (e) {
+      return DateTime(year, month, day, hour, minute);
+    } catch (_) {
       return null;
     }
   }
@@ -100,15 +94,25 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
     return 'Active';
   }
 
-  // Join the ride and create the booking atomically.
+  // Join the ride and create the booking.
   Future<void> joinRide() async {
     if (isJoining) {
       return;
     }
 
+    final User? user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please log in before joining a ride.'),
+        ),
+      );
+      return;
+    }
+
     final String status = getRideStatus();
 
-    // Joining is not allowed after the ride has started.
     if (status == 'Started') {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -118,7 +122,6 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
       return;
     }
 
-    // Joining is not allowed after cancellation.
     if (status == 'Cancelled') {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -128,7 +131,6 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
       return;
     }
 
-    // Joining is not allowed after the 10-minute connection period.
     if (status == 'Waiting Ended') {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -140,7 +142,6 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
       return;
     }
 
-    // Check whether seats are available.
     if (widget.ride.availableSeats <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -152,33 +153,36 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
       return;
     }
 
+    // Do not allow the ride creator to book their own ride.
+    if (user.uid == widget.ride.rideCreatorUid) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('You cannot join your own ride.'),
+        ),
+      );
+      return;
+    }
+
     setState(() {
       isJoining = true;
     });
 
     try {
-      // Create the booking object.
-      final Booking booking = Booking(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
+      // Create the booking and reserve one seat through BookingData.
+      // BookingData obtains the authenticated user's UID itself.
+      await BookingData.createBookingWithSeat(
         rideId: widget.ride.id,
         studentName: StudentData.name,
-        status: 'Confirmed',
-      );
-
-      // Reserve the seat AND create the booking inside
-      // one Firestore transaction.
-      await BookingData.createBookingWithSeat(
-        booking: booking,
       );
 
       if (!mounted) {
         return;
       }
 
-      // Keep the displayed ride object synchronized.
+      // Update the local display after the booking succeeds.
       widget.ride.availableSeats--;
 
-      // Open confirmation screen.
+      // Open the booking confirmation screen.
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
@@ -192,11 +196,10 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
         return;
       }
 
-      String message = 'Unable to join the ride.';
+      final String error = e.toString().toLowerCase();
+      String message = 'Unable to join the ride. Please try again.';
 
-      final String error = e.toString();
-
-      if (error.contains('Ride not found')) {
+      if (error.contains('ride not found')) {
         message = 'This ride is no longer available.';
       } else if (error.contains('cancelled')) {
         message = 'This ride has been cancelled.';
@@ -204,16 +207,20 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
         message = 'This ride has already started.';
       } else if (error.contains('connection period')) {
         message = 'The 10-minute connection period has ended.';
-      } else if (error.contains('no seats')) {
+      } else if (error.contains('no seats') ||
+          error.contains('no available seats') ||
+          error.contains('seats are no longer available')) {
         message = 'Sorry, no seats are available for this ride.';
+      } else if (error.contains('already booked')) {
+        message = 'You have already booked this ride.';
       } else if (error.contains('permission-denied')) {
         message = 'You do not have permission to join this ride.';
+      } else if (error.contains('log in')) {
+        message = 'Please log in before joining a ride.';
       }
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message),
-        ),
+        SnackBar(content: Text(message)),
       );
     } finally {
       if (mounted) {
@@ -228,19 +235,14 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
     switch (status) {
       case 'Cancelled':
         return Colors.red;
-
       case 'Full':
         return Colors.orange;
-
       case 'Started':
         return Colors.blue;
-
       case 'Waiting':
         return Colors.deepOrange;
-
       case 'Waiting Ended':
         return Colors.purple;
-
       default:
         return Colors.green;
     }
@@ -251,7 +253,6 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
     final int availableSeats = widget.ride.availableSeats;
     final String rideStatus = getRideStatus();
     final Color statusColor = getStatusColor(rideStatus);
-
     final bool isFull = availableSeats <= 0;
 
     final bool canJoin =
@@ -346,7 +347,6 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
                 fontWeight: FontWeight.bold,
               ),
             ),
-
             const SizedBox(height: 15),
 
             Card(
@@ -360,14 +360,14 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
                       rideStatus == 'Started'
                           ? Icons.play_circle
                           : rideStatus == 'Cancelled'
-                          ? Icons.cancel
-                          : rideStatus == 'Waiting'
-                          ? Icons.hourglass_top
-                          : rideStatus == 'Waiting Ended'
-                          ? Icons.access_time
-                          : isFull
-                          ? Icons.event_seat
-                          : Icons.check_circle,
+                              ? Icons.cancel
+                              : rideStatus == 'Waiting'
+                                  ? Icons.hourglass_top
+                                  : rideStatus == 'Waiting Ended'
+                                      ? Icons.access_time
+                                      : isFull
+                                          ? Icons.event_seat
+                                          : Icons.check_circle,
                       size: 45,
                       color: statusColor,
                     ),
@@ -385,14 +385,14 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
                       rideStatus == 'Waiting'
                           ? 'Connection period is active. Students can join this ride.'
                           : rideStatus == 'Waiting Ended'
-                          ? 'The 10-minute connection period has ended.'
-                          : rideStatus == 'Started'
-                          ? 'The Ride Creator has started the ride.'
-                          : rideStatus == 'Cancelled'
-                          ? 'This ride has been cancelled.'
-                          : isFull
-                          ? 'All seats for this ride are booked.'
-                          : 'This ride is available for students to join.',
+                              ? 'The 10-minute connection period has ended.'
+                              : rideStatus == 'Started'
+                                  ? 'The Ride Creator has started the ride.'
+                                  : rideStatus == 'Cancelled'
+                                      ? 'This ride has been cancelled.'
+                                      : isFull
+                                          ? 'All seats for this ride are booked.'
+                                          : 'This ride is available for students to join.',
                       textAlign: TextAlign.center,
                       style: const TextStyle(
                         color: Colors.grey,
@@ -414,7 +414,6 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
                 fontWeight: FontWeight.bold,
               ),
             ),
-
             const SizedBox(height: 15),
 
             Card(
@@ -467,7 +466,6 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
                 fontWeight: FontWeight.bold,
               ),
             ),
-
             const SizedBox(height: 15),
 
             Card(
@@ -513,23 +511,23 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
                         color: isFull
                             ? Colors.red.shade50
                             : availableSeats == 1
-                            ? Colors.orange.shade50
-                            : Colors.green.shade50,
+                                ? Colors.orange.shade50
+                                : Colors.green.shade50,
                         borderRadius: BorderRadius.circular(20),
                       ),
                       child: Text(
                         isFull
                             ? 'Ride Full'
                             : availableSeats == 1
-                            ? '1 Seat Remaining'
-                            : 'Seats Available',
+                                ? '1 Seat Remaining'
+                                : 'Seats Available',
                         style: TextStyle(
                           fontWeight: FontWeight.bold,
                           color: isFull
                               ? Colors.red
                               : availableSeats == 1
-                              ? Colors.orange.shade800
-                              : Colors.green,
+                                  ? Colors.orange.shade800
+                                  : Colors.green,
                         ),
                       ),
                     ),
@@ -548,7 +546,6 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
                 fontWeight: FontWeight.bold,
               ),
             ),
-
             const SizedBox(height: 15),
 
             Card(
@@ -617,12 +614,12 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
                         isFull
                             ? 'Ride Full'
                             : rideStatus == 'Waiting Ended'
-                            ? 'Connection Period Ended'
-                            : rideStatus == 'Started'
-                            ? 'Ride Started'
-                            : rideStatus == 'Cancelled'
-                            ? 'Ride Cancelled'
-                            : 'Join Ride',
+                                ? 'Connection Period Ended'
+                                : rideStatus == 'Started'
+                                    ? 'Ride Started'
+                                    : rideStatus == 'Cancelled'
+                                        ? 'Ride Cancelled'
+                                        : 'Join Ride',
                         style: const TextStyle(fontSize: 18),
                       ),
               ),

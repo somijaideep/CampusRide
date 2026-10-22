@@ -1,21 +1,29 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../data/booking_data.dart';
+import '../data/chat_data.dart';
 import '../data/ride_data.dart';
 import '../models/ride_model.dart';
+import 'chat_screen.dart';
 
 class MyOfferedRidesScreen extends StatefulWidget {
   const MyOfferedRidesScreen({super.key});
 
   @override
-  State<MyOfferedRidesScreen> createState() => _MyOfferedRidesScreenState();
+  State<MyOfferedRidesScreen> createState() =>
+      _MyOfferedRidesScreenState();
 }
 
 class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
   bool isLoading = true;
 
-  // Keeps track of a ride currently being updated.
   String? updatingRideId;
+
+  // Cache passenger requests to avoid repeated Firestore queries
+  // whenever Flutter rebuilds the screen.
+  final Map<String, Future<List<Map<String, dynamic>>>>
+      _passengerFutures = {};
 
   @override
   void initState() {
@@ -23,22 +31,17 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
     loadOfferedRides();
   }
 
-  // Load the latest rides from Firebase.
   Future<void> loadOfferedRides() async {
     try {
       await RideData.getRides();
 
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       setState(() {
         isLoading = false;
       });
     } catch (e) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       setState(() {
         isLoading = false;
@@ -54,15 +57,106 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
     }
   }
 
-  // Cancel a ride.
-  Future<void> cancelRide(Ride ride) async {
-    if (updatingRideId != null) {
+  // Retrieve confirmed passengers for one ride.
+  Future<List<Map<String, dynamic>>> _getPassengers(
+    String rideId,
+  ) {
+    return _passengerFutures.putIfAbsent(
+      rideId,
+      () => BookingData.getConfirmedPassengers(rideId),
+    );
+  }
+
+  // Open a private chat between the ride creator and a passenger.
+  Future<void> _openPassengerChat({
+    required Ride ride,
+    required Map<String, dynamic> passenger,
+  }) async {
+    final String bookingId =
+        (passenger['bookingId'] ?? '').toString();
+
+    final String studentUid =
+        (passenger['studentUid'] ?? '').toString();
+
+    final String studentName =
+        (passenger['studentName'] ?? 'Student').toString();
+
+    final User? currentUser = FirebaseAuth.instance.currentUser;
+
+    if (currentUser == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please log in to use chat.'),
+        ),
+      );
       return;
     }
 
-    if (ride.status == 'Cancelled') {
+    if (currentUser.uid != ride.rideCreatorUid) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Only the ride creator can use this action here.'),
+        ),
+      );
       return;
     }
+
+    if (bookingId.isEmpty || studentUid.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Passenger information is incomplete. Please refresh and try again.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    try {
+      final String chatId = await ChatData.createOrGetChat(
+        rideId: ride.id,
+        bookingId: bookingId,
+        rideCreatorUid: ride.rideCreatorUid,
+        rideCreatorName: ride.rideCreatorName,
+        studentUid: studentUid,
+        studentName: studentName,
+      );
+
+      if (!mounted) return;
+
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ChatScreen(
+            chatId: chatId,
+            otherStudentName: studentName,
+            rideId: ride.id,
+            bookingId: bookingId,
+            rideCreatorUid: ride.rideCreatorUid,
+            rideCreatorName: ride.rideCreatorName,
+            studentUid: studentUid,
+            studentName: studentName,
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Could not open the chat. Check your connection and Firestore rules.\n$e',
+          ),
+        ),
+      );
+    }
+  }
+
+  // Cancel a ride.
+  Future<void> cancelRide(Ride ride) async {
+    if (updatingRideId != null) return;
+
+    if (ride.status == 'Cancelled') return;
 
     if (ride.status == 'Started') {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -104,13 +198,7 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
       },
     );
 
-    if (shouldCancel != true) {
-      return;
-    }
-
-    if (!mounted) {
-      return;
-    }
+    if (shouldCancel != true || !mounted) return;
 
     setState(() {
       updatingRideId = ride.id;
@@ -120,12 +208,9 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
       ride.status = 'Cancelled';
 
       await RideData.updateRide(ride);
-
       await RideData.getRides();
 
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       setState(() {
         updatingRideId = null;
@@ -142,9 +227,7 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
         await RideData.getRides();
       } catch (_) {}
 
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       setState(() {
         updatingRideId = null;
@@ -152,9 +235,7 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'Could not cancel the ride.\n$e',
-          ),
+          content: Text('Could not cancel the ride.\n$e'),
         ),
       );
     }
@@ -162,9 +243,7 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
 
   // Start the ride.
   Future<void> startRide(Ride ride) async {
-    if (updatingRideId != null) {
-      return;
-    }
+    if (updatingRideId != null) return;
 
     if (ride.status == 'Cancelled' || ride.status == 'Started') {
       return;
@@ -172,7 +251,6 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
 
     final String currentStatus = getRideStatus(ride);
 
-    // Ride Creator cannot start before the scheduled time.
     if (currentStatus == 'Active') {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -184,7 +262,6 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
       return;
     }
 
-    // Waiting, Waiting Ended, and Full rides can be started.
     if (currentStatus != 'Waiting' &&
         currentStatus != 'Waiting Ended' &&
         currentStatus != 'Full') {
@@ -222,13 +299,7 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
       },
     );
 
-    if (shouldStart != true) {
-      return;
-    }
-
-    if (!mounted) {
-      return;
-    }
+    if (shouldStart != true || !mounted) return;
 
     setState(() {
       updatingRideId = ride.id;
@@ -238,12 +309,9 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
       ride.status = 'Started';
 
       await RideData.updateRide(ride);
-
       await RideData.getRides();
 
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       setState(() {
         updatingRideId = null;
@@ -260,9 +328,7 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
         await RideData.getRides();
       } catch (_) {}
 
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       setState(() {
         updatingRideId = null;
@@ -270,9 +336,7 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'Could not start the ride.\n$e',
-          ),
+          content: Text('Could not start the ride.\n$e'),
         ),
       );
     }
@@ -283,9 +347,7 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
     try {
       final List<String> dateParts = ride.date.split('/');
 
-      if (dateParts.length != 3) {
-        return null;
-      }
+      if (dateParts.length != 3) return null;
 
       final int day = int.parse(dateParts[0]);
       final int month = int.parse(dateParts[1]);
@@ -309,84 +371,230 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
         }
       }
 
-      return DateTime(
-        year,
-        month,
-        day,
-        hour,
-        minute,
-      );
-    } catch (e) {
+      return DateTime(year, month, day, hour, minute);
+    } catch (_) {
       return null;
     }
   }
 
   // Get the current display status of the ride.
   String getRideStatus(Ride ride) {
-    if (ride.status == 'Cancelled') {
-      return 'Cancelled';
-    }
-
-    if (ride.status == 'Started') {
-      return 'Started';
-    }
+    if (ride.status == 'Cancelled') return 'Cancelled';
+    if (ride.status == 'Started') return 'Started';
 
     final DateTime? rideDateTime = getRideDateTime(ride);
 
     if (rideDateTime != null) {
       final DateTime now = DateTime.now();
 
-      // Before scheduled time.
       if (now.isBefore(rideDateTime)) {
-        if (ride.availableSeats <= 0) {
-          return 'Full';
-        }
-
-        return 'Active';
+        return ride.availableSeats <= 0 ? 'Full' : 'Active';
       }
 
-      final DateTime waitingEnd = rideDateTime.add(
-        const Duration(minutes: 10),
-      );
+      final DateTime waitingEnd =
+          rideDateTime.add(const Duration(minutes: 10));
 
-      // First 10 minutes = connection/waiting period.
-      if (now.isBefore(waitingEnd)) {
-        return 'Waiting';
-      }
+      if (now.isBefore(waitingEnd)) return 'Waiting';
 
-      // After 10 minutes, Ride Creator decides
-      // whether to start or cancel.
       return 'Waiting Ended';
     }
 
-    if (ride.availableSeats <= 0) {
-      return 'Full';
-    }
-
-    return 'Active';
+    return ride.availableSeats <= 0 ? 'Full' : 'Active';
   }
 
-  // Get status color.
   Color getStatusColor(String status) {
     switch (status) {
       case 'Cancelled':
         return Colors.red;
-
       case 'Full':
         return Colors.orange;
-
       case 'Started':
         return Colors.blue;
-
       case 'Waiting':
         return Colors.deepOrange;
-
       case 'Waiting Ended':
         return Colors.purple;
-
       default:
         return Colors.green;
     }
+  }
+
+  // Passenger section for a ride.
+  Widget _buildPassengersSection(Ride ride) {
+    if (ride.status == 'Cancelled') {
+      return Container(
+        width: double.infinity,
+        margin: const EdgeInsets.only(top: 18),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.grey.shade100,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: const Row(
+          children: [
+            Icon(Icons.lock_outline, color: Colors.grey),
+            SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Chat is unavailable because this ride was cancelled.',
+                style: TextStyle(color: Colors.grey),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 18),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE0F2F1),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(
+                Icons.groups_outlined,
+                color: Color(0xFF00897B),
+              ),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Confirmed Passengers',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          FutureBuilder<List<Map<String, dynamic>>>(
+            future: _getPassengers(ride.id),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: Center(
+                    child: SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Color(0xFF00897B),
+                      ),
+                    ),
+                  ),
+                );
+              }
+
+              if (snapshot.hasError) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Could not load passengers.',
+                      style: TextStyle(color: Colors.red),
+                    ),
+                    TextButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          _passengerFutures.remove(ride.id);
+                        });
+                      },
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Retry'),
+                    ),
+                  ],
+                );
+              }
+
+              final List<Map<String, dynamic>> passengers =
+                  snapshot.data ?? [];
+
+              if (passengers.isEmpty) {
+                return const Text(
+                  'No confirmed passengers yet.',
+                  style: TextStyle(color: Colors.black54),
+                );
+              }
+
+              return Column(
+                children: passengers.map((passenger) {
+                  final String name =
+                      (passenger['studentName'] ?? 'Student').toString();
+
+                  final bool canChat =
+                      (passenger['studentUid'] ?? '')
+                          .toString()
+                          .isNotEmpty &&
+                      (passenger['bookingId'] ?? '')
+                          .toString()
+                          .isNotEmpty;
+
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Row(
+                      children: [
+                        CircleAvatar(
+                          backgroundColor: const Color(0xFFE0F2F1),
+                          child: Text(
+                            name.isNotEmpty
+                                ? name[0].toUpperCase()
+                                : 'S',
+                            style: const TextStyle(
+                              color: Color(0xFF00897B),
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            name,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton.tonalIcon(
+                          onPressed: canChat
+                              ? () => _openPassengerChat(
+                                    ride: ride,
+                                    passenger: passenger,
+                                  )
+                              : null,
+                          icon: const Icon(
+                            Icons.chat_bubble_outline,
+                            size: 18,
+                          ),
+                          label: const Text('Chat'),
+                          style: FilledButton.styleFrom(
+                            foregroundColor: const Color(0xFF00897B),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+              );
+            },
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -406,16 +614,12 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
       );
     }
 
-    // Get the currently authenticated Firebase student.
     final User? currentUser = FirebaseAuth.instance.currentUser;
 
-    // Show only rides created by the current student's Firebase UID.
     final List<Ride> offeredRides = currentUser == null
         ? []
         : RideData.rides
-            .where(
-              (ride) => ride.rideCreatorUid == currentUser.uid,
-            )
+            .where((ride) => ride.rideCreatorUid == currentUser.uid)
             .toList();
 
     return Scaffold(
@@ -481,9 +685,7 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
                     (isWaiting || isWaitingEnded || isFull);
 
                 final bool canCancelRide =
-                    !isCancelled &&
-                    !isStarted &&
-                    !isUpdating;
+                    !isCancelled && !isStarted && !isUpdating;
 
                 return Card(
                   elevation: 3,
@@ -496,7 +698,6 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // Header.
                         Row(
                           children: [
                             CircleAvatar(
@@ -534,9 +735,7 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
                                 vertical: 6,
                               ),
                               decoration: BoxDecoration(
-                                color: statusColor.withValues(
-                                  alpha: 0.1,
-                                ),
+                                color: statusColor.withValues(alpha: 0.1),
                                 borderRadius: BorderRadius.circular(20),
                               ),
                               child: Text(
@@ -549,10 +748,7 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
                             ),
                           ],
                         ),
-
                         const SizedBox(height: 20),
-
-                        // Route.
                         Row(
                           children: [
                             const Icon(
@@ -571,12 +767,9 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
                             ),
                           ],
                         ),
-
                         const SizedBox(height: 18),
                         const Divider(),
                         const SizedBox(height: 12),
-
-                        // Date and Time.
                         Row(
                           children: [
                             Expanded(
@@ -595,10 +788,7 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
                             ),
                           ],
                         ),
-
                         const SizedBox(height: 18),
-
-                        // Vehicle and Seats.
                         Row(
                           children: [
                             Expanded(
@@ -617,10 +807,7 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
                             ),
                           ],
                         ),
-
                         const SizedBox(height: 18),
-
-                        // Cost.
                         Row(
                           children: [
                             Expanded(
@@ -641,22 +828,15 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
                             ),
                           ],
                         ),
-
                         const SizedBox(height: 20),
-
-                        // Status message.
                         Container(
                           width: double.infinity,
                           padding: const EdgeInsets.all(14),
                           decoration: BoxDecoration(
-                            color: statusColor.withValues(
-                              alpha: 0.08,
-                            ),
+                            color: statusColor.withValues(alpha: 0.08),
                             borderRadius: BorderRadius.circular(10),
                             border: Border.all(
-                              color: statusColor.withValues(
-                                alpha: 0.3,
-                              ),
+                              color: statusColor.withValues(alpha: 0.3),
                             ),
                           ),
                           child: Row(
@@ -699,7 +879,9 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
                           ),
                         ),
 
-                        // Updating indicator.
+                        // Confirmed passengers and private chats.
+                        _buildPassengersSection(ride),
+
                         if (isUpdating) ...[
                           const SizedBox(height: 18),
                           const Center(
@@ -709,19 +891,14 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
                           ),
                         ],
 
-                        // Ride management buttons.
                         if (canStartRide || canCancelRide) ...[
                           const SizedBox(height: 20),
-
-                          // Start Ride button.
                           if (canStartRide)
                             SizedBox(
                               width: double.infinity,
                               height: 48,
                               child: ElevatedButton.icon(
-                                onPressed: () {
-                                  startRide(ride);
-                                },
+                                onPressed: () => startRide(ride),
                                 icon: const Icon(Icons.play_arrow),
                                 label: const Text(
                                   'Start Ride',
@@ -739,19 +916,14 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
                                 ),
                               ),
                             ),
-
                           if (canStartRide && canCancelRide)
                             const SizedBox(height: 10),
-
-                          // Cancel Ride button.
                           if (canCancelRide)
                             SizedBox(
                               width: double.infinity,
                               height: 48,
                               child: OutlinedButton.icon(
-                                onPressed: () {
-                                  cancelRide(ride);
-                                },
+                                onPressed: () => cancelRide(ride),
                                 icon: const Icon(
                                   Icons.cancel_outlined,
                                   color: Colors.red,
@@ -765,9 +937,7 @@ class _MyOfferedRidesScreenState extends State<MyOfferedRidesScreen> {
                                   ),
                                 ),
                                 style: OutlinedButton.styleFrom(
-                                  side: const BorderSide(
-                                    color: Colors.red,
-                                  ),
+                                  side: const BorderSide(color: Colors.red),
                                   shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(10),
                                   ),

@@ -3,23 +3,31 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/ride_model.dart';
 
 class RideData {
-  // Local list is kept temporarily so existing screens can continue
-  // working while Firebase becomes the main shared data source.
+  // Local list synchronized with Firebase Firestore.
   static final List<Ride> rides = [];
 
-  static final CollectionReference<Map<String, dynamic>> _ridesCollection =
+  static final CollectionReference<Map<String, dynamic>>
+      _ridesCollection =
       FirebaseFirestore.instance.collection('rides');
 
-  // Save a ride to Firebase Firestore.
+  // --------------------------------------------------
+  // ADD A RIDE
+  // --------------------------------------------------
+
   static Future<void> addRide(Ride ride) async {
     await _ridesCollection.doc(ride.id).set(ride.toMap());
 
-    // Keep the local list updated too.
-    rides.removeWhere((existingRide) => existingRide.id == ride.id);
+    rides.removeWhere(
+      (existingRide) => existingRide.id == ride.id,
+    );
+
     rides.add(ride);
   }
 
-  // Get all rides from Firebase Firestore.
+  // --------------------------------------------------
+  // GET ALL RIDES ONCE
+  // --------------------------------------------------
+
   static Future<List<Ride>> getRides() async {
     final snapshot = await _ridesCollection.get();
 
@@ -27,7 +35,6 @@ class RideData {
       return Ride.fromMap(doc.id, doc.data());
     }).toList();
 
-    // Keep the local list synchronized.
     rides
       ..clear()
       ..addAll(firebaseRides);
@@ -35,7 +42,29 @@ class RideData {
     return firebaseRides;
   }
 
-  // Update an existing ride in Firebase.
+  // --------------------------------------------------
+  // LISTEN TO LIVE FIRESTORE UPDATES
+  // --------------------------------------------------
+
+  static Stream<List<Ride>> watchRides() {
+    return _ridesCollection.snapshots().map((snapshot) {
+      final firebaseRides = snapshot.docs.map((doc) {
+        return Ride.fromMap(doc.id, doc.data());
+      }).toList();
+
+      // Synchronize the local ride list.
+      rides
+        ..clear()
+        ..addAll(firebaseRides);
+
+      return firebaseRides;
+    });
+  }
+
+  // --------------------------------------------------
+  // UPDATE AN EXISTING RIDE
+  // --------------------------------------------------
+
   static Future<void> updateRide(Ride ride) async {
     await _ridesCollection.doc(ride.id).update(ride.toMap());
 
@@ -45,82 +74,88 @@ class RideData {
 
     if (index != -1) {
       rides[index] = ride;
+    } else {
+      rides.add(ride);
     }
   }
 
-  // Reserve one seat using a Firestore transaction.
-  //
-  // This makes the seat update safer when multiple students
-  // try to join the same ride at nearly the same time.
+  // --------------------------------------------------
+  // RESERVE ONE SEAT SAFELY
+  // --------------------------------------------------
+
   static Future<Ride> reserveSeat(String rideId) async {
-    final Ride updatedRide = await FirebaseFirestore.instance
-        .runTransaction<Ride>((transaction) async {
-          final DocumentReference<Map<String, dynamic>> rideReference =
-              _ridesCollection.doc(rideId);
+    final Ride updatedRide =
+        await FirebaseFirestore.instance.runTransaction<Ride>(
+      (transaction) async {
+        final DocumentReference<Map<String, dynamic>>
+            rideReference = _ridesCollection.doc(rideId);
 
-          final DocumentSnapshot<Map<String, dynamic>> snapshot =
-              await transaction.get(rideReference);
+        final DocumentSnapshot<Map<String, dynamic>> snapshot =
+            await transaction.get(rideReference);
 
-          if (!snapshot.exists) {
-            throw Exception('Ride not found.');
-          }
+        if (!snapshot.exists) {
+          throw Exception('Ride not found.');
+        }
 
-          final Map<String, dynamic> data = snapshot.data()!;
+        final Map<String, dynamic> data = snapshot.data()!;
 
-          final Ride currentRide = Ride.fromMap(
-            snapshot.id,
-            data,
-          );
+        final Ride currentRide = Ride.fromMap(
+          snapshot.id,
+          data,
+        );
 
-          // Do not allow a seat to be reserved if the ride
-          // is cancelled or already started.
-          if (currentRide.status == 'Cancelled') {
-            throw Exception('This ride has been cancelled.');
-          }
+        // Do not allow reservations for cancelled rides.
+        if (currentRide.status == 'Cancelled') {
+          throw Exception('This ride has been cancelled.');
+        }
 
-          if (currentRide.status == 'Started') {
-            throw Exception('This ride has already started.');
-          }
+        // Do not allow reservations for started rides.
+        if (currentRide.status == 'Started') {
+          throw Exception('This ride has already started.');
+        }
 
-          // Do not allow a seat after the connection period.
-          final DateTime? rideDateTime = _getRideDateTime(currentRide);
+        // Check the 10-minute connection period.
+        final DateTime? rideDateTime =
+            _getRideDateTime(currentRide);
 
-          if (rideDateTime != null) {
-            final DateTime now = DateTime.now();
+        if (rideDateTime != null) {
+          final DateTime now = DateTime.now();
 
-            if (!now.isBefore(rideDateTime)) {
-              final DateTime waitingEnd = rideDateTime.add(
-                const Duration(minutes: 10),
+          if (!now.isBefore(rideDateTime)) {
+            final DateTime waitingEnd = rideDateTime.add(
+              const Duration(minutes: 10),
+            );
+
+            if (!now.isBefore(waitingEnd)) {
+              throw Exception(
+                'The 10-minute connection period has ended.',
               );
-
-              if (!now.isBefore(waitingEnd)) {
-                throw Exception(
-                  'The 10-minute connection period has ended.',
-                );
-              }
             }
           }
+        }
 
-          // Check the latest seat count directly from Firebase.
-          if (currentRide.availableSeats <= 0) {
-            throw Exception('Sorry, no seats are available for this ride.');
-          }
+        // Check available seats using the latest Firestore data.
+        if (currentRide.availableSeats <= 0) {
+          throw Exception(
+            'Sorry, no seats are available for this ride.',
+          );
+        }
 
-          // Decrease the seat count.
-          final int newAvailableSeats =
-              currentRide.availableSeats - 1;
+        // Reserve one seat.
+        final int newAvailableSeats =
+            currentRide.availableSeats - 1;
 
-          transaction.update(rideReference, {
-            'availableSeats': newAvailableSeats,
-          });
-
-          // Create the updated Ride object.
-          currentRide.availableSeats = newAvailableSeats;
-
-          return currentRide;
+        transaction.update(rideReference, {
+          'availableSeats': newAvailableSeats,
         });
 
-    // Keep the local copy synchronized with Firebase.
+        currentRide.availableSeats = newAvailableSeats;
+
+        return currentRide;
+      },
+    );
+
+    // Synchronize the local list after the transaction succeeds.
     final index = rides.indexWhere(
       (existingRide) => existingRide.id == updatedRide.id,
     );
@@ -134,9 +169,13 @@ class RideData {
     return updatedRide;
   }
 
-  // Convert the stored date and time into DateTime.
+  // --------------------------------------------------
+  // PARSE RIDE DATE AND TIME
+  // --------------------------------------------------
+
   static DateTime? _getRideDateTime(Ride ride) {
     try {
+      // Expected date format: DD/MM/YYYY.
       final List<String> dateParts = ride.date.split('/');
 
       if (dateParts.length != 3) {
@@ -147,12 +186,26 @@ class RideData {
       final int month = int.parse(dateParts[1]);
       final int year = int.parse(dateParts[2]);
 
-      final List<String> timeParts = ride.time.split(' ');
+      // Supports times such as 10:30 AM or 2:15 PM.
+      final List<String> timeParts =
+          ride.time.trim().split(RegExp(r'\s+'));
 
-      final List<String> clockParts = timeParts[0].split(':');
+      final List<String> clockParts =
+          timeParts[0].split(':');
+
+      if (clockParts.length != 2) {
+        return null;
+      }
 
       int hour = int.parse(clockParts[0]);
       final int minute = int.parse(clockParts[1]);
+
+      if (hour < 0 ||
+          hour > 23 ||
+          minute < 0 ||
+          minute > 59) {
+        return null;
+      }
 
       if (timeParts.length > 1) {
         final String period = timeParts[1].toUpperCase();
@@ -173,7 +226,7 @@ class RideData {
         hour,
         minute,
       );
-    } catch (e) {
+    } catch (_) {
       return null;
     }
   }

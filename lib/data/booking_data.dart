@@ -4,450 +4,286 @@ import 'package:firebase_auth/firebase_auth.dart';
 import '../models/booking_model.dart';
 
 class BookingData {
-  // Local list is kept temporarily so existing screens
-  // can continue working while Firebase is the main
-  // shared data source.
-  static final List<Booking> bookings = [];
+  static final FirebaseFirestore _firestore =
+      FirebaseFirestore.instance;
 
-  static final CollectionReference<Map<String, dynamic>>
-      _bookingsCollection =
-      FirebaseFirestore.instance.collection('bookings');
+  static final CollectionReference<Map<String, dynamic>> _bookings =
+      _firestore.collection('bookings');
 
-  static final CollectionReference<Map<String, dynamic>>
-      _ridesCollection =
-      FirebaseFirestore.instance.collection('rides');
+  static final CollectionReference<Map<String, dynamic>> _rides =
+      _firestore.collection('rides');
 
-  // --------------------------------------------------
-  // CREATE BOOKING + RESERVE SEAT ATOMICALLY
-  // --------------------------------------------------
-  //
-  // The seat reservation and booking creation happen
-  // inside one Firestore transaction.
-  //
-  // The transaction also verifies the ride's
-  // 10-minute connection period.
-  //
-  static Future<Booking> createBookingWithSeat({
-    required Booking booking,
+  static List<Booking> bookings = [];
+
+  // =========================================================
+  // CREATE BOOKING AND RESERVE A SEAT
+  // =========================================================
+
+  static Future<void> createBookingWithSeat({
+    required String rideId,
+    required String studentName,
   }) async {
-    final User? currentUser = FirebaseAuth.instance.currentUser;
+    final user = FirebaseAuth.instance.currentUser;
 
-    if (currentUser == null) {
-      throw Exception('Student is not authenticated.');
+    if (user == null) {
+      throw Exception('Please log in before booking a ride.');
     }
 
-    final DocumentReference<Map<String, dynamic>> rideReference =
-        _ridesCollection.doc(booking.rideId);
+    final String studentUid = user.uid;
 
-    final DocumentReference<Map<String, dynamic>> bookingReference =
-        _bookingsCollection.doc(booking.id);
+    if (studentName.trim().isEmpty) {
+      throw Exception('Student name cannot be empty.');
+    }
 
-    final Booking createdBooking =
-        await FirebaseFirestore.instance
-            .runTransaction<Booking>((transaction) async {
-      // Read the latest ride data directly from Firebase.
-      final DocumentSnapshot<Map<String, dynamic>> rideSnapshot =
-          await transaction.get(rideReference);
+    final DocumentReference<Map<String, dynamic>> rideRef =
+        _rides.doc(rideId);
+
+    final DocumentReference<Map<String, dynamic>> bookingRef =
+        _bookings.doc();
+
+    await _firestore.runTransaction((transaction) async {
+      final rideSnapshot = await transaction.get(rideRef);
 
       if (!rideSnapshot.exists) {
-        throw Exception('Ride not found.');
+        throw Exception('This ride does not exist.');
       }
 
-      final Map<String, dynamic> rideData =
-          rideSnapshot.data()!;
+      final rideData = rideSnapshot.data()!;
 
-      final String rideStatus =
-          rideData['status'] ?? 'Active';
+      if (rideData['rideCreatorUid'] == studentUid) {
+        throw Exception('You cannot book your own ride.');
+      }
+
+      if (rideData['status'] != 'Active') {
+        throw Exception('This ride is not available for booking.');
+      }
 
       final int availableSeats =
-          (rideData['availableSeats'] ?? 0) as int;
+          (rideData['availableSeats'] as num?)?.toInt() ?? 0;
 
-      // --------------------------------------------------
-      // RIDE STATUS CHECKS
-      // --------------------------------------------------
-
-      // Do not allow joining a cancelled ride.
-      if (rideStatus == 'Cancelled') {
-        throw Exception(
-          'This ride has been cancelled.',
-        );
-      }
-
-      // Do not allow joining a started ride.
-      if (rideStatus == 'Started') {
-        throw Exception(
-          'This ride has already started.',
-        );
-      }
-
-      // --------------------------------------------------
-      // 10-MINUTE CONNECTION PERIOD CHECK
-      // --------------------------------------------------
-      //
-      // Before scheduled time:
-      //     Joining is allowed.
-      //
-      // Scheduled time → +10 minutes:
-      //     Joining is allowed.
-      //
-      // After +10 minutes:
-      //     Joining is rejected.
-      //
-
-      final DateTime? rideDateTime =
-          _getRideDateTime(rideData);
-
-      if (rideDateTime != null) {
-        final DateTime now = DateTime.now();
-
-        // The connection period ends 10 minutes
-        // after the scheduled ride time.
-        final DateTime waitingEnd = rideDateTime.add(
-          const Duration(minutes: 10),
-        );
-
-        if (!now.isBefore(waitingEnd)) {
-          throw Exception(
-            'The 10-minute connection period has ended.',
-          );
-        }
-      }
-
-      // --------------------------------------------------
-      // SEAT CHECK
-      // --------------------------------------------------
-
-      // Check that a seat is still available.
       if (availableSeats <= 0) {
-        throw Exception(
-          'Sorry, no seats are available for this ride.',
-        );
+        throw Exception('No seats are available.');
       }
 
-      // Reduce the latest seat count.
-      final int newAvailableSeats =
-          availableSeats - 1;
+      // Prevent a second active booking by the same student
+      // for the same ride.
+      //
+      // The query is performed before any transaction writes.
+      final existingBookings = await _bookings
+          .where('rideId', isEqualTo: rideId)
+          .where('studentUid', isEqualTo: studentUid)
+          .get();
 
-      transaction.update(
-        rideReference,
-        {
-          'availableSeats': newAvailableSeats,
-        },
+      final alreadyBooked = existingBookings.docs.any(
+        (document) => document.data()['status'] == 'Confirmed',
       );
 
-      // --------------------------------------------------
-      // CREATE BOOKING
-      // --------------------------------------------------
+      if (alreadyBooked) {
+        throw Exception('You have already booked this ride.');
+      }
 
-      transaction.set(
-        bookingReference,
-        {
-          'rideId': booking.rideId,
-          'studentName': booking.studentName,
-          'studentUid': currentUser.uid,
-          'status': booking.status,
-        },
-      );
+      transaction.set(bookingRef, {
+        'rideId': rideId,
+        'studentUid': studentUid,
+        'studentName': studentName.trim(),
+        'status': 'Confirmed',
+        'createdAt': FieldValue.serverTimestamp(),
+      });
 
-      return booking;
+      transaction.update(rideRef, {
+        'availableSeats': availableSeats - 1,
+      });
     });
 
-    // Keep the local list synchronized.
-    bookings.removeWhere(
-      (existingBooking) =>
-          existingBooking.id == createdBooking.id,
-    );
-
-    bookings.add(createdBooking);
-
-    return createdBooking;
+    await getBookings();
   }
 
-  // --------------------------------------------------
-  // CONVERT RIDE DATE + TIME INTO DATETIME
-  // --------------------------------------------------
-  //
-  // Current ride format:
-  // Date → DD/MM/YYYY
-  // Time → HH:MM AM/PM
-  //
-  static DateTime? _getRideDateTime(
-    Map<String, dynamic> rideData,
-  ) {
-    try {
-      final String date =
-          rideData['date'] ?? '';
+  // =========================================================
+  // LOAD CURRENT STUDENT'S BOOKINGS
+  // =========================================================
 
-      final String time =
-          rideData['time'] ?? '';
+  static Future<void> getBookings() async {
+    final user = FirebaseAuth.instance.currentUser;
 
-      final List<String> dateParts =
-          date.split('/');
-
-      if (dateParts.length != 3) {
-        return null;
-      }
-
-      final int day =
-          int.parse(dateParts[0]);
-
-      final int month =
-          int.parse(dateParts[1]);
-
-      final int year =
-          int.parse(dateParts[2]);
-
-      final List<String> timeParts =
-          time.split(' ');
-
-      if (timeParts.isEmpty) {
-        return null;
-      }
-
-      final List<String> clockParts =
-          timeParts[0].split(':');
-
-      if (clockParts.length != 2) {
-        return null;
-      }
-
-      int hour =
-          int.parse(clockParts[0]);
-
-      final int minute =
-          int.parse(clockParts[1]);
-
-      // Convert AM/PM to 24-hour format.
-      if (timeParts.length > 1) {
-        final String period =
-            timeParts[1].toUpperCase();
-
-        if (period == 'PM' && hour != 12) {
-          hour += 12;
-        }
-
-        if (period == 'AM' && hour == 12) {
-          hour = 0;
-        }
-      }
-
-      return DateTime(
-        year,
-        month,
-        day,
-        hour,
-        minute,
-      );
-    } catch (e) {
-      return null;
-    }
-  }
-
-  // --------------------------------------------------
-  // SAVE BOOKING
-  // --------------------------------------------------
-  //
-  // Kept for compatibility with the existing project.
-  //
-  static Future<void> addBooking(Booking booking) async {
-    final User? currentUser = FirebaseAuth.instance.currentUser;
-
-    if (currentUser == null) {
-      throw Exception('Student is not authenticated.');
+    if (user == null) {
+      bookings = [];
+      return;
     }
 
-    await _bookingsCollection.doc(booking.id).set({
-      'rideId': booking.rideId,
-      'studentName': booking.studentName,
-      'studentUid': currentUser.uid,
-      'status': booking.status,
-    });
-
-    bookings.removeWhere(
-      (existingBooking) =>
-          existingBooking.id == booking.id,
-    );
-
-    bookings.add(booking);
-  }
-
-  // --------------------------------------------------
-  // GET CURRENT STUDENT'S BOOKINGS
-  // --------------------------------------------------
-  static Future<List<Booking>> getBookings() async {
-    final User? currentUser = FirebaseAuth.instance.currentUser;
-
-    if (currentUser == null) {
-      throw Exception('Student is not authenticated.');
-    }
-
-    final snapshot = await _bookingsCollection
-        .where(
-          'studentUid',
-          isEqualTo: currentUser.uid,
-        )
+    final snapshot = await _bookings
+        .where('studentUid', isEqualTo: user.uid)
         .get();
 
-    final firebaseBookings =
-        snapshot.docs.map((doc) {
-      final Map<String, dynamic> data = doc.data();
+    bookings = snapshot.docs.map((document) {
+      final data = document.data();
 
       return Booking(
-        id: doc.id,
+        id: document.id,
         rideId: data['rideId'] ?? '',
         studentName: data['studentName'] ?? '',
+        studentUid: data['studentUid'] ?? '',
         status: data['status'] ?? 'Confirmed',
       );
     }).toList();
 
-    bookings
-      ..clear()
-      ..addAll(firebaseBookings);
-
-    return firebaseBookings;
+    // Newest bookings first, when the creation timestamps exist.
+    bookings.sort((a, b) => b.id.compareTo(a.id));
   }
 
-  // --------------------------------------------------
-  // UPDATE BOOKING
-  // --------------------------------------------------
-  static Future<void> updateBooking(
-    Booking booking,
-  ) async {
-    final User? currentUser =
-        FirebaseAuth.instance.currentUser;
+  // =========================================================
+  // ADD BOOKING TO LOCAL LIST
+  // =========================================================
 
-    if (currentUser == null) {
-      throw Exception('Student is not authenticated.');
-    }
+  static void addBooking(Booking booking) {
+    bookings.add(booking);
+  }
 
-    await _bookingsCollection.doc(booking.id).update({
-      'rideId': booking.rideId,
-      'studentName': booking.studentName,
-      'studentUid': currentUser.uid,
+  // =========================================================
+  // UPDATE BOOKING STATUS IN FIRESTORE
+  // =========================================================
+
+  static Future<void> updateBooking(Booking booking) async {
+    await _bookings.doc(booking.id).update({
       'status': booking.status,
     });
 
-    final index = bookings.indexWhere(
-      (existingBooking) =>
-          existingBooking.id == booking.id,
-    );
-
-    if (index != -1) {
-      bookings[index] = booking;
-    }
+    await getBookings();
   }
 
-  // --------------------------------------------------
-  // CANCEL BOOKING + RETURN SEAT ATOMICALLY
-  // --------------------------------------------------
-  //
-  // The booking cancellation and seat return happen
-  // inside one Firestore transaction.
-  //
+  // =========================================================
+  // GET CONFIRMED PASSENGERS FOR A RIDE
+  // Only the ride creator can retrieve this list.
+  // =========================================================
+
+  static Future<List<Map<String, dynamic>>> getConfirmedPassengers(
+    String rideId,
+  ) async {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      throw Exception('Please log in to view passengers.');
+    }
+
+    final rideSnapshot = await _rides.doc(rideId).get();
+
+    if (!rideSnapshot.exists) {
+      throw Exception('Ride not found.');
+    }
+
+    final rideData = rideSnapshot.data()!;
+
+    if (rideData['rideCreatorUid'] != user.uid) {
+      throw Exception(
+        'Only the ride creator can view the passenger list.',
+      );
+    }
+
+    final snapshot = await _bookings
+        .where('rideId', isEqualTo: rideId)
+        .get();
+
+    final List<Map<String, dynamic>> passengers = [];
+
+    for (final document in snapshot.docs) {
+      final data = document.data();
+
+      if (data['status'] != 'Confirmed') {
+        continue;
+      }
+
+      final String studentUid = data['studentUid'] ?? '';
+
+      if (studentUid.isEmpty || studentUid == user.uid) {
+        continue;
+      }
+
+      passengers.add({
+        'bookingId': document.id,
+        'rideId': data['rideId'] ?? rideId,
+        'studentUid': studentUid,
+        'studentName': data['studentName'] ?? 'Student',
+        'status': data['status'] ?? 'Confirmed',
+      });
+    }
+
+    return passengers;
+  }
+
+  // =========================================================
+  // CANCEL BOOKING AND RESTORE THE SEAT
+  // Both operations happen in one transaction.
+  // =========================================================
+
   static Future<void> cancelBooking({
     required Booking booking,
   }) async {
-    final User? currentUser =
-        FirebaseAuth.instance.currentUser;
+    final user = FirebaseAuth.instance.currentUser;
 
-    if (currentUser == null) {
-      throw Exception('Student is not authenticated.');
+    if (user == null) {
+      throw Exception('Please log in to cancel your booking.');
     }
 
-    final DocumentReference<Map<String, dynamic>>
-        bookingReference =
-        _bookingsCollection.doc(booking.id);
+    if (booking.studentUid != user.uid) {
+      throw Exception('You cannot cancel another student’s booking.');
+    }
 
-    final DocumentReference<Map<String, dynamic>>
-        rideReference =
-        _ridesCollection.doc(booking.rideId);
+    final DocumentReference<Map<String, dynamic>> bookingRef =
+        _bookings.doc(booking.id);
 
-    await FirebaseFirestore.instance
-        .runTransaction<void>((transaction) async {
-      // Read the latest booking.
-      final DocumentSnapshot<Map<String, dynamic>>
-          bookingSnapshot =
-          await transaction.get(bookingReference);
+    final DocumentReference<Map<String, dynamic>> rideRef =
+        _rides.doc(booking.rideId);
+
+    await _firestore.runTransaction((transaction) async {
+      final bookingSnapshot = await transaction.get(bookingRef);
+      final rideSnapshot = await transaction.get(rideRef);
 
       if (!bookingSnapshot.exists) {
         throw Exception('Booking not found.');
       }
 
-      final Map<String, dynamic> bookingData =
-          bookingSnapshot.data()!;
-
-      final String bookingStudentUid =
-          bookingData['studentUid'] ?? '';
-
-      final String bookingStatus =
-          bookingData['status'] ?? 'Confirmed';
-
-      // Make sure this booking belongs to the
-      // currently authenticated student.
-      if (bookingStudentUid != currentUser.uid) {
-        throw Exception(
-          'You cannot cancel this booking.',
-        );
-      }
-
-      if (bookingStatus == 'Cancelled') {
-        throw Exception(
-          'This booking is already cancelled.',
-        );
-      }
-
-      // Read the latest ride.
-      final DocumentSnapshot<Map<String, dynamic>>
-          rideSnapshot =
-          await transaction.get(rideReference);
-
       if (!rideSnapshot.exists) {
         throw Exception('Ride not found.');
       }
 
-      final Map<String, dynamic> rideData =
-          rideSnapshot.data()!;
+      final bookingData = bookingSnapshot.data()!;
+      final rideData = rideSnapshot.data()!;
+
+      if (bookingData['studentUid'] != user.uid) {
+        throw Exception('You cannot cancel another student’s booking.');
+      }
+
+      if (bookingData['status'] != 'Confirmed') {
+        throw Exception('This booking is no longer confirmed.');
+      }
+
+      if (rideData['status'] == 'Started') {
+        throw Exception('A started ride cannot be cancelled.');
+      }
+
+      if (rideData['status'] == 'Cancelled') {
+        throw Exception('This ride has already been cancelled.');
+      }
 
       final int availableSeats =
-          (rideData['availableSeats'] ?? 0) as int;
+          (rideData['availableSeats'] as num?)?.toInt() ?? 0;
 
       final int totalSeats =
-          (rideData['totalSeats'] ?? 0) as int;
+          (rideData['totalSeats'] as num?)?.toInt() ?? 0;
 
-      // Never allow available seats to exceed
-      // the original total.
-      final int newAvailableSeats =
-          availableSeats < totalSeats
-              ? availableSeats + 1
-              : availableSeats;
+      if (availableSeats >= totalSeats) {
+        throw Exception('The ride already has all seats available.');
+      }
 
-      // Return the seat.
-      transaction.update(
-        rideReference,
-        {
-          'availableSeats': newAvailableSeats,
-        },
-      );
+      transaction.update(bookingRef, {
+        'status': 'Cancelled',
+      });
 
-      // Mark the booking as cancelled.
-      transaction.update(
-        bookingReference,
-        {
-          'status': 'Cancelled',
-        },
-      );
+      transaction.update(rideRef, {
+        'availableSeats': availableSeats + 1,
+      });
     });
 
-    // Update local copy.
-    booking.status = 'Cancelled';
-
-    final int index = bookings.indexWhere(
-      (existingBooking) =>
-          existingBooking.id == booking.id,
-    );
-
-    if (index != -1) {
-      bookings[index] = booking;
-    }
+    await getBookings();
   }
 }
+

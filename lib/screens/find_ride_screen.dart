@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../data/ride_data.dart';
 import '../models/ride_model.dart';
+import '../widgets/location_autocomplete_field.dart';
 import 'ride_details_screen.dart';
 
 class FindRideScreen extends StatefulWidget {
@@ -12,39 +13,52 @@ class FindRideScreen extends StatefulWidget {
 }
 
 class _FindRideScreenState extends State<FindRideScreen> {
-  final TextEditingController startController = TextEditingController();
-  final TextEditingController destinationController = TextEditingController();
+  final TextEditingController startController =
+      TextEditingController();
+
+  final TextEditingController destinationController =
+      TextEditingController();
 
   List<Ride> searchResults = [];
   bool isSearching = false;
+  bool hasSearched = false;
 
   Future<void> searchRide() async {
-    String start = startController.text.trim().toLowerCase();
-    String destination = destinationController.text.trim().toLowerCase();
+    final String start =
+        startController.text.trim().toLowerCase();
+
+    final String destination =
+        destinationController.text.trim().toLowerCase();
 
     if (start.isEmpty || destination.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Please enter starting point and destination.'),
+          content: Text(
+            'Please enter starting point and destination.',
+          ),
         ),
       );
       return;
     }
 
+    FocusScope.of(context).unfocus();
+
     setState(() {
       isSearching = true;
+      hasSearched = true;
+      searchResults = [];
     });
 
     try {
-      // Get the latest rides from Firebase Firestore.
+      // Fetch the latest rides from Firebase Firestore.
       final List<Ride> allRides = await RideData.getRides();
 
-      // Search rides from the Firebase data.
-      // Full rides are also included so the user can see
-      // that the ride is full.
-      List<Ride> results = allRides.where((ride) {
-        return ride.pickup.toLowerCase() == start &&
-            ride.destination.toLowerCase() == destination;
+      // Preserve exact matching behavior from the original screen.
+      // Full and cancelled rides are also shown in the results.
+      final List<Ride> results = allRides.where((ride) {
+        return ride.pickup.trim().toLowerCase() == start &&
+            ride.destination.trim().toLowerCase() ==
+                destination;
       }).toList();
 
       if (!mounted) return;
@@ -83,6 +97,7 @@ class _FindRideScreenState extends State<FindRideScreen> {
   void dispose() {
     startController.dispose();
     destinationController.dispose();
+
     super.dispose();
   }
 
@@ -97,36 +112,28 @@ class _FindRideScreenState extends State<FindRideScreen> {
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const SizedBox(height: 20),
 
-            // Starting Point
-            TextField(
+            LocationAutocompleteField(
               controller: startController,
-              decoration: const InputDecoration(
-                labelText: 'Starting Point',
-                hintText: 'Example: Vijayawada',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.location_on),
-              ),
+              labelText: 'Starting Point',
+              hintText: 'Example: Vijayawada',
+              prefixIcon: Icons.trip_origin,
             ),
 
             const SizedBox(height: 20),
 
-            // Destination
-            TextField(
+            LocationAutocompleteField(
               controller: destinationController,
-              decoration: const InputDecoration(
-                labelText: 'Destination',
-                hintText: 'Example: VIT-AP',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.location_on),
-              ),
+              labelText: 'Destination',
+              hintText: 'Example: VIT-AP',
+              prefixIcon: Icons.location_on,
             ),
 
             const SizedBox(height: 30),
 
-            // Search button
             SizedBox(
               width: double.infinity,
               height: 55,
@@ -154,39 +161,45 @@ class _FindRideScreenState extends State<FindRideScreen> {
 
             const SizedBox(height: 30),
 
-            // Search results
-            if (searchResults.isNotEmpty)
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Matching Rides',
-                    style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                    ),
+            if (isSearching)
+              const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(20),
+                  child: CircularProgressIndicator(
+                    color: Color(0xFF00897B),
                   ),
-
-                  const SizedBox(height: 15),
-
-                  ...searchResults.map(
-                    (ride) => RideCard(ride: ride),
-                  ),
-                ],
+                ),
               ),
 
-            // No rides found
-            if (searchResults.isEmpty &&
-                startController.text.isNotEmpty &&
-                destinationController.text.isNotEmpty &&
-                !isSearching)
+            if (!isSearching && searchResults.isNotEmpty) ...[
+              const Text(
+                'Matching Rides',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+
+              const SizedBox(height: 15),
+
+              ...searchResults.map(
+                (ride) => RideCard(ride: ride),
+              ),
+            ],
+
+            if (!isSearching &&
+                hasSearched &&
+                searchResults.isEmpty)
               const Padding(
                 padding: EdgeInsets.only(top: 20),
-                child: Text(
-                  'No rides to display.',
-                  style: TextStyle(
-                    fontSize: 16,
-                    color: Colors.grey,
+                child: Center(
+                  child: Text(
+                    'No matching rides found. Try checking your locations.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Colors.grey,
+                    ),
                   ),
                 ),
               ),
@@ -205,7 +218,7 @@ class RideCard extends StatelessWidget {
     required this.ride,
   });
 
-  // Convert ride date and time into DateTime.
+  // Convert the stored ride date and time into DateTime.
   DateTime? getRideDateTime() {
     try {
       final List<String> dateParts = ride.date.split('/');
@@ -249,7 +262,6 @@ class RideCard extends StatelessWidget {
     }
   }
 
-  // Get the current display status.
   String getRideStatus() {
     if (ride.status == 'Cancelled') {
       return 'Cancelled';
@@ -321,19 +333,18 @@ class RideCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Vehicle
             Row(
               children: [
                 Icon(
                   status == 'Started'
                       ? Icons.play_circle
                       : status == 'Cancelled'
-                      ? Icons.cancel
-                      : status == 'Waiting'
-                      ? Icons.hourglass_top
-                      : status == 'Waiting Ended'
-                      ? Icons.access_time
-                      : Icons.directions_car,
+                          ? Icons.cancel
+                          : status == 'Waiting'
+                              ? Icons.hourglass_top
+                              : status == 'Waiting Ended'
+                                  ? Icons.access_time
+                                  : Icons.directions_car,
                   size: 30,
                   color: statusColor,
                 ),
@@ -350,7 +361,6 @@ class RideCard extends StatelessWidget {
                   ),
                 ),
 
-                // Status badge
                 Container(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 10,
@@ -374,7 +384,6 @@ class RideCard extends StatelessWidget {
 
             const SizedBox(height: 15),
 
-            // Route
             Text(
               '${ride.pickup} → ${ride.destination}',
               style: const TextStyle(
@@ -385,7 +394,6 @@ class RideCard extends StatelessWidget {
 
             const SizedBox(height: 10),
 
-            // Date and time
             Row(
               children: [
                 const Icon(
@@ -412,7 +420,6 @@ class RideCard extends StatelessWidget {
 
             const SizedBox(height: 10),
 
-            // Ride Creator
             Row(
               children: [
                 const Icon(
@@ -432,7 +439,6 @@ class RideCard extends StatelessWidget {
 
             const SizedBox(height: 10),
 
-            // Seats
             Row(
               children: [
                 Icon(
@@ -445,17 +451,17 @@ class RideCard extends StatelessWidget {
 
                 const SizedBox(width: 8),
 
-                Text(
-                  isFull
-                      ? '0 seat(s) available • RIDE FULL'
-                      : '${ride.availableSeats} seat(s) available',
-                  style: TextStyle(
-                    fontWeight: isFull
-                        ? FontWeight.bold
-                        : FontWeight.normal,
-                    color: isFull
-                        ? Colors.red
-                        : Colors.black,
+                Expanded(
+                  child: Text(
+                    isFull
+                        ? '0 seat(s) available • RIDE FULL'
+                        : '${ride.availableSeats} seat(s) available',
+                    style: TextStyle(
+                      fontWeight: isFull
+                          ? FontWeight.bold
+                          : FontWeight.normal,
+                      color: isFull ? Colors.red : Colors.black,
+                    ),
                   ),
                 ),
               ],
@@ -463,7 +469,6 @@ class RideCard extends StatelessWidget {
 
             const SizedBox(height: 10),
 
-            // Status explanation
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(12),
@@ -478,14 +483,14 @@ class RideCard extends StatelessWidget {
                 status == 'Waiting'
                     ? 'Connection period is active. Students can join this ride.'
                     : status == 'Waiting Ended'
-                    ? 'The 10-minute connection period has ended. Waiting for the Ride Creator to start or cancel.'
-                    : status == 'Started'
-                    ? 'This ride has been started by the Ride Creator.'
-                    : status == 'Cancelled'
-                    ? 'This ride has been cancelled.'
-                    : isFull
-                    ? 'All seats for this ride are booked.'
-                    : 'This ride is available for students.',
+                        ? 'The 10-minute connection period has ended. Waiting for the Ride Creator to start or cancel.'
+                        : status == 'Started'
+                            ? 'This ride has been started by the Ride Creator.'
+                            : status == 'Cancelled'
+                                ? 'This ride has been cancelled.'
+                                : isFull
+                                    ? 'All seats for this ride are booked.'
+                                    : 'This ride is available for students.',
                 style: TextStyle(
                   color: statusColor,
                   fontWeight: FontWeight.w600,
@@ -495,7 +500,6 @@ class RideCard extends StatelessWidget {
 
             const Divider(height: 25),
 
-            // Cost
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -517,7 +521,6 @@ class RideCard extends StatelessWidget {
 
             const SizedBox(height: 15),
 
-            // View Ride button
             SizedBox(
               width: double.infinity,
               height: 45,
@@ -538,9 +541,7 @@ class RideCard extends StatelessWidget {
                   foregroundColor: Colors.white,
                 ),
                 child: Text(
-                  isFull
-                      ? 'View Full Ride'
-                      : 'View Ride',
+                  isFull ? 'View Full Ride' : 'View Ride',
                   style: const TextStyle(fontSize: 16),
                 ),
               ),
